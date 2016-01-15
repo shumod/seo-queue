@@ -1,0 +1,154 @@
+<?php
+
+/*
+ * Implements hook_cron().
+ */
+function seo_queue_cron() {
+
+  $week = 1 * 24 * 60 * 60; //с какой переодичностью обновлять
+  $last_refresh_queue_timestamp = variable_get('seo_queue', time() - $week - 1000);
+  if($last_refresh_queue_timestamp + $week < time()) {
+
+  	$once = 100; //столько элементов будем получать за 1 раз с сервера культуры 
+
+    //какие объекты будем обновлять. ещё нужно поправить в seo_queue_cron_queue_info
+    $types = array('places', 'events', 'articles');
+
+  	foreach ($types as $type) {
+  	  $total_url = 'http://all.culture.ru/api/1.0/' . $type . '?limit=1';
+  	  $total = _seo_queue_decode($total_url)->total;
+	  
+	  $options = array(
+	    'limit' => $once,
+	  );
+      $queue = DrupalQueue::get("seo_queue_" . $type);
+
+      for($i = 0; $i < $total / $once; $i++){
+        $options['offset'] = $i * $once;
+        $queue->createItem($options); 
+      }
+
+      $file = $type . '.txt'; //обнуляем файл
+      file_put_contents($file, '');
+
+      watchdog('queue', "$type type queue added");
+  	}
+
+    variable_set('seo_queue', time());  
+  }
+  else {
+  	$wait = time() - variable_get('seo_queue') - $week;
+  	watchdog('queue', "Week is not last.  Wait $wait more seconds");
+  }
+
+}
+
+/*
+ * Implements hook_cron_queue_info().
+ */
+function seo_queue_cron_queue_info() {
+  $types = array('places', 'events', 'articles');
+  foreach ($types as $type) {
+    $queues['seo_queue_' . $type] = array (
+      'worker callback' => 'seo_queue_process_item_' . $type,
+      'time' => 240,    // Time, in seconds, to let this process run
+    );
+  }
+  return $queues;
+}
+
+//записываем места в файл с помощью queue
+function seo_queue_process_item_places($options) {
+  $limit = $options['limit'];
+  $offset = $options['offset'];
+
+  $url = 'http://all.culture.ru/api/1.0/places?limit=' . $limit . '&offset=' . $offset;
+  $places = _seo_queue_decode($url)->places;
+
+  $sitemap_url = '';
+  foreach ($places as $place) {
+    $sitemap_url .= 'http://prosvetcult.ru/r/'._seo_queue_return_current_region_path_from_array($place->localeIds) . '/places/' . $place->_id . "\n";
+  }
+
+  $file = 'places.txt';
+  file_put_contents($file, $sitemap_url, FILE_APPEND | LOCK_EX); 
+}
+
+//добавляет события в файл
+function seo_queue_process_item_events($options) {
+  $limit = $options['limit'];
+  $offset = $options['offset'];
+
+  $url = 'http://all.culture.ru/api/1.0/events?limit=' . $limit . '&offset=' . $offset;
+  $events = _seo_queue_decode($url)->events;
+
+  $sitemap_url = '';
+  foreach ($events as $event) {
+    $sitemap_url .= 'http://prosvetcult.ru/r/'._seo_queue_return_current_region_path_from_array($event->localeIds) . '/events/' . $event->_id . "\n";
+  }
+
+  $file = 'events.txt';
+  file_put_contents($file, $sitemap_url, FILE_APPEND | LOCK_EX);
+}
+
+
+//добавляет статьи в файл
+function seo_queue_process_item_articles($options) {
+  $limit = $options['limit'];
+  $offset = $options['offset'];
+
+  $url = 'http://all.culture.ru/api/1.0/articles?limit=' . $limit . '&offset=' . $offset;
+  $articles = _seo_queue_decode($url)->articles;
+
+  $sitemap_url = '';
+  foreach ($articles as $article) {
+    $sitemap_url .= 'http://prosvetcult.ru/articles/' . $article->_id . "\n";
+  }
+
+  $file = 'articles.txt';
+  file_put_contents($file, $sitemap_url, FILE_APPEND | LOCK_EX); 
+}
+
+
+
+/*
+ * Вспомогательные функции для работы
+ */
+
+//отдаёт декодированный запрос к урлу
+function _seo_queue_decode($url){
+  $options = array(
+    'method' => 'GET',
+    'timeout' => 15,
+    'headers' => array('Content-Type' => 'application/x-www-form-urlencoded'),
+  );
+  $result = drupal_http_request($url, $options);
+  return json_decode($result->data);
+}
+
+//возвращает url термина таксономии региона.
+function _seo_queue_return_current_region_path_from_array($region = array()){
+  $region_id = 0;
+  $region_path = '';
+  if(sizeof($region) > 0){
+    if(sizeof($region) == 2){
+      $region_id = $region[0];
+    }
+    else if(sizeof($region) == 3){
+      $region_id = $region[1];
+    }
+  }
+  else{
+    return drupal_not_found();
+  }
+
+  $term_id = db_select('field_data_field_locales_id', 'f')
+    ->fields('f', array('entity_id'))
+    ->condition('f.field_locales_id_value', $region_id)
+    ->execute()
+    ->fetchField();  
+
+  $region_path = drupal_get_path_alias('taxonomy/term/'.$term_id);
+
+  return $region_path;
+}

@@ -1,0 +1,5 @@
+name = Seo queue
+description = Создаёт очередь, в которой автоматически по крону формируются карты сайта
+version = 7.x-1.0
+core = 7.x
+package = Custom
